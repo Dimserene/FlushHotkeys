@@ -2,18 +2,41 @@ fhotkey = {}
 fhotkey.current_mod = SMODS.current_mod
 local config = fhotkey.current_mod.config
 
+-- which hand is selected first, reorder if you want
+local hand_order = {
+  "5oak",
+  "4oak",
+  "fullhouse",
+  "5flush",
+  "5str",
+  "2pair",
+  "4flush",
+  "3oak",
+  "4str",
+  "str2pair", -- "e.g having 89JQ"
+  "3flush",
+  "3str",
+  "2oak",
+  "2flush",
+  "2str",
+}
+local hand_priority = {}
+for i, v in ipairs(hand_order) do
+  hand_priority[v] = #hand_order - i
+end
+
 local function create_keybind_box(module, description)
   return {
     n = G.UIT.R,
-    config = { padding = 0.2, align = "cm" },
+    config = { padding = 0.2},
     nodes = {
       {
         n = G.UIT.C,
-        config = { align = "cl" },
+        config = { align = "cl", maxw=3 },
         nodes = {
           {
             n = G.UIT.T,
-            config = { text = description, colour = G.C.WHITE, scale = 0.35, align = "cm" },
+            config = { text = description, colour = G.C.WHITE, scale = 0.35, align = "cl" },
           }
         }
       }
@@ -26,10 +49,11 @@ local function create_keybind_box(module, description)
 
           UIBox_button({
             label = { module.key1 or "None" },
+            align = "cm",
             col = true,
             colour = G.C.Mult,
             scale = 0.35,
-            --minw = 2.75,
+            maxw=3,
             minh = 0.45,
             ref_table = {
               configs = module,
@@ -37,14 +61,20 @@ local function create_keybind_box(module, description)
             },
             button = "fhotkey_key_change",
           })
-          ,
+        },
+      },
+      {
+        n = G.UIT.C,
+        config = { padding = 0.05, align = "cr" },
+        nodes = {
 
           UIBox_button({
             label = { module.key2 or "None" },
+            align = "cr",
             col = true,
             colour = G.C.Mult,
             scale = 0.35,
-            --minw = 2.75,
+            maxw=3,
             minh = 0.45,
             ref_table = {
               configs = module,
@@ -58,6 +88,65 @@ local function create_keybind_box(module, description)
   }
 end
 
+local function create_keybind_toggle(module, field, description)
+  return {
+    n = G.UIT.R,
+    config = { padding = 0.2, align = "cm"},
+    nodes = {
+      {
+        n = G.UIT.C,
+        config = { align = "cl", minw=2, },
+        nodes = {
+          {
+            n = G.UIT.T,
+            config = { text = description, colour = G.C.WHITE, scale = 0.35, align = "cl" },
+          }
+        }
+      }
+      ,
+      {
+        n = G.UIT.C,
+        config = { align = "cm", padding = 0.05, minw=2, },
+        nodes = {
+          {
+            n = G.UIT.R,
+            config = { align = "cm" },
+            nodes = {
+
+              create_toggle({
+                label = "",
+                w = 0,
+                align = "cm",
+                ref_table = module.key1conf,
+                ref_value = field,
+              }),
+            }
+          }
+        }
+      },
+      {
+        n = G.UIT.C,
+        config = { align = "cr", padding = 0.05, minw=2, },
+        nodes = { {
+          n = G.UIT.R,
+          config = { align = "cm" },
+          nodes = {
+
+            create_toggle({
+              label = "",
+              w = 0,
+              align = "cr",
+              ref_table = module.key2conf,
+              ref_value = field,
+            })
+
+          }
+        } }
+      }
+    }
+  }
+end
+
 fhotkey.current_mod.config_tab = function()
   return {
     n = G.UIT.ROOT,
@@ -67,11 +156,12 @@ fhotkey.current_mod.config_tab = function()
     nodes = {
       {
         n = G.UIT.C,
-        config = { padding = 0.05 },
+        config = { padding = 0.05, align = "cm" },
         nodes = {
-          create_keybind_box(config.flush_keys, "Select flushes"),
-          create_keybind_box(config.oak_keys, "5-4-3 of a kinds"),
-          create_keybind_box(config.str_keys, "Straights"),
+          create_keybind_box(config.best_hand_keys, "Select best hands"),
+          create_keybind_toggle(config.best_hand_keys, "accept_flush", "Include flushes"),
+          create_keybind_toggle(config.best_hand_keys, "accept_oak", "Include 5-4-3 pairs"),
+          create_keybind_toggle(config.best_hand_keys, "accept_str", "Include straights"),
           create_keybind_box(config.invert_keys, "Invert selection"),
           create_keybind_box(config.play_hand_keys, "Play Hand"),
           create_keybind_box(config.discard_hand_keys, "Discard Hand"),
@@ -85,7 +175,7 @@ local is_catching_key = false
 local function get_visible_rank(card)
   if card.ability.effect == "Stone Card" then return "stone" end
   if card.facing == 'back' then return "stone" end
-  return card.base.id
+  return string.format(card.base.id)
 end
 
 local function get_visible_suit(card)
@@ -93,6 +183,10 @@ local function get_visible_suit(card)
   if card.ability.name == "Wild Card" and not card.debuff then return "wild" end
   if card.facing == "back" then return "stone" end
   return card.base.suit
+end
+
+local function ranksuit(card)
+  return get_visible_rank(card) .. get_visible_suit(card)
 end
 
 local function calculate_importance(card, is_for_play)
@@ -192,6 +286,34 @@ local function calculate_importance(card, is_for_play)
   return res
 end
 
+local function hand_importance(hand)
+  res = 0
+  for k, v in pairs(hand) do
+    res = res + calculate_importance(v, true)
+  end
+  return res
+end
+
+local function is_better_hand(hand1, hand2)
+  if hand1.hand_type ~= hand2.hand_type then
+    return hand_priority[hand1.hand_type] > hand_priority[hand2.hand_type]
+  end
+  return hand_importance(hand1.hand) > hand_importance(hand2.hand)
+end
+
+local function is_subset(subset, superset, hasher)
+  for k, v in pairs(subset) do
+    local found = false
+    for k2, v2 in pairs(superset) do
+      found = found or (hasher(v) == hasher(v2))
+    end
+    if not found then
+      return false
+    end
+  end
+  return true
+end
+
 local function merge(arr1, arr2)
   local res = {}
   for k, v in pairs(arr1) do
@@ -244,40 +366,15 @@ local function map_f(arr, f)
   return res
 end
 
-local function hand_importance(hand)
-  res = 0
-  for k, v in pairs(hand) do
-    res = res + calculate_importance(v, true)
+local function hands_to_named(hands, name)
+  local res = {}
+  for k, v in pairs(hands) do
+    table.insert(res, {
+      hand = v,
+      hand_type = name
+    })
   end
   return res
-end
-
-local function are_ranks_same(hand1, hand2)
-  local h1_ranks = map_f(hand1, get_visible_rank)
-  local h2_ranks = map_f(hand2, get_visible_rank)
-  local h1_rank_counts = {}
-  for i, v in ipairs(h1_ranks) do
-    if not h1_rank_counts[v] then
-      h1_rank_counts[v] = 0
-    end
-    h1_rank_counts[v] = h1_rank_counts[v] + 1
-  end
-  local h2_rank_counts = {}
-  for i, v in ipairs(h2_ranks) do
-    if not h2_rank_counts[v] then
-      h2_rank_counts[v] = 0
-    end
-    h2_rank_counts[v] = h2_rank_counts[v] + 1
-  end
-  for k, v in pairs(h1_rank_counts) do
-    if not h2_rank_counts[k] then return false end
-    if not (h2_rank_counts[k] == v) then return false end
-  end
-  for k, v in pairs(h2_rank_counts) do
-    if not h1_rank_counts[k] then return false end
-    if not (h1_rank_counts[k] == v) then return false end
-  end
-  return true
 end
 
 local function possible_straights(cards)
@@ -307,13 +404,14 @@ local function possible_straights(cards)
   local previous_run = {}
   if cards_by_rank[14] then table.insert(current_run, cards_by_rank[14]) end
   for i = 2, 15, 1 do
-    if cards_by_rank[i] then
-      table.insert(current_run, cards_by_rank[i])
+    local curr_rank = string.format(i)
+    if cards_by_rank[curr_rank] then
+      table.insert(current_run, cards_by_rank[curr_rank])
     else
       if #current_run >= 5 then
         local hand_to_add = {}
-        for i = #current_run, #current_run - 5, -1 do
-          table.insert(hand_to_add, current_run[i])
+        for j = #current_run, #current_run - 4, -1 do
+          table.insert(hand_to_add, current_run[j])
         end
         table.insert(fives, hand_to_add)
         current_run = {}
@@ -339,18 +437,12 @@ local function possible_straights(cards)
       end
     end
   end
-  local sorter = function(x, y) return hand_importance(x) > hand_importance(y) end
-  table.sort(fives, sorter)
-  table.sort(fours, sorter)
-  table.sort(threes, sorter)
-  table.sort(two_two, sorter)
-  table.sort(twos, sorter)
   local res = {}
-  res = merge(res, fives)
-  res = merge(res, fours)
-  res = merge(res, two_two)
-  res = merge(res, threes)
-  res = merge(res, twos)
+  res = merge(res, hands_to_named(fives, "5str"))
+  res = merge(res, hands_to_named(fours, "4str"))
+  res = merge(res, hands_to_named(two_two, "str2pair"))
+  res = merge(res, hands_to_named(threes, "3str"))
+  res = merge(res, hands_to_named(twos, "2str"))
   return res
 end
 
@@ -373,31 +465,51 @@ local function possible_flushes(cards)
   local res = {}
   for k, v in pairs(dictionary) do
     table.sort(v, function(x, y) return calculate_importance(x, true) > calculate_importance(y, true) end)
-    table.insert(res, take(v, 5))
-  end
-  table.sort(res, function(x, y)
-    return ((#x == #y) and (hand_importance(x) > hand_importance(y)))
-        or #x > #y
-  end)
-  return {
-    wild_cards = wilds,
-    hands = res
-  }
-end
-
-local function next_best_oak(possible_hands, curr_hand)
-  if #possible_hands == 1 then
-    return possible_hands[1]
-  end
-  if #possible_hands == 0 then
-    return {}
-  end
-  for i = 1, (#possible_hands - 1) do
-    if are_ranks_same(possible_hands[i], curr_hand) then
-      return possible_hands[i + 1]
+    local flush_hand = take(v, 5)
+    if #flush_hand < 5 and #wilds > 0 then
+      flush_hand = merge(flush_hand, take(wilds, 5 - #flush_hand))
+    end
+    if #flush_hand >= 2 then
+      local card_cnt = string.format(#flush_hand)
+      table.insert(res, {
+        hand = flush_hand,
+        hand_type = card_cnt .. "flush"
+      })
     end
   end
-  return possible_hands[1]
+  return res
+end
+
+local function next_best_hand(possible_hands, curr_hand, hasher)
+  if #possible_hands == 1 then return possible_hands[1].hand end
+  if #possible_hands == 0 then return {} end
+  if #curr_hand == 0 then return possible_hands[1].hand end
+
+  -- if curr_hand is found in possible hands, select the next one
+  -- otherwise, if only 1 card is selected, select best hand containing it
+  -- otherwise, select best hand containing it (but is slower)
+  local best_superset = false
+  for i = 1, #possible_hands do
+    if is_subset(curr_hand, possible_hands[i].hand, hasher) then
+      if #curr_hand == #possible_hands[i].hand then
+        if i == #possible_hands then
+          return possible_hands[1].hand
+        else
+          return possible_hands[i + 1].hand
+        end
+      elseif #curr_hand == 1 then
+        return possible_hands[i].hand
+      else
+        if not best_superset then
+          best_superset = possible_hands[i].hand
+        end
+      end
+    end
+  end
+  if best_superset then
+    return best_superset
+  end
+  return possible_hands[1].hand
 end
 
 local function best_ofakinds(cards)
@@ -453,19 +565,13 @@ local function best_ofakinds(cards)
       table.insert(two_pairs, merge(twos[i], twos[j]))
     end
   end
-  table.sort(fives, function(x, y) return hand_importance(x) > hand_importance(y) end)
-  table.sort(fours, function(x, y) return hand_importance(x) > hand_importance(y) end)
-  table.sort(trips, function(x, y) return hand_importance(x) > hand_importance(y) end)
-  table.sort(full_houses, function(x, y) return hand_importance(x) > hand_importance(y) end)
-  table.sort(two_pairs, function(x, y) return hand_importance(x) > hand_importance(y) end)
-  table.sort(twos, function(x, y) return hand_importance(x) > hand_importance(y) end)
   local res = {}
-  res = merge(res, fives)
-  res = merge(res, fours)
-  res = merge(res, full_houses)
-  res = merge(res, trips)
-  res = merge(res, two_pairs)
-  res = merge(res, twos)
+  res = merge(res, hands_to_named(fives, "5oak"))
+  res = merge(res, hands_to_named(fours, "4oak"))
+  res = merge(res, hands_to_named(full_houses, "fullhouse"))
+  res = merge(res, hands_to_named(trips, "3oak"))
+  res = merge(res, hands_to_named(two_pairs, "2pair"))
+  res = merge(res, hands_to_named(twos, "2oak"))
   return res
 end
 
@@ -483,63 +589,27 @@ local function select_hand(cards)
   end
 end
 
+local function select_best_hand(cards, accepted_hands)
+  local hands = {}
+  if accepted_hands.accept_str then
+    hands = merge(hands, possible_straights(cards))
+  end
+  if accepted_hands.accept_flush then
+    hands = merge(hands, possible_flushes(cards))
+  end
+  if accepted_hands.accept_oak then
+    hands = merge(hands, best_ofakinds(cards))
+  end
+  table.sort(hands, is_better_hand)
+  select_hand(next_best_hand(hands, G.hand.highlighted, ranksuit))
+end
+
 local function invert_selection()
   local unselected = filter(G.hand.cards, function(x)
     return -1 == indexOf(G.hand.highlighted, function(y) return y == x end)
   end)
   table.sort(unselected, function(x, y) return calculate_importance(x, false) < calculate_importance(y, false) end)
   select_hand(take(unselected, 5))
-end
-
-local function select_flush()
-  local possible_hands = possible_flushes(G.hand.cards)
-  local highlighted_wildlesses = filter(G.hand.highlighted, function(k) return get_visible_suit(k) ~= "wild" end)
-  if not next(possible_hands.hands) then
-    if next(possible_hands.wild_cards) then
-      select_hand(take(possible_hands.wild_cards, 5))
-    end
-    return
-  end
-  if #G.hand.highlighted == 0 then
-    local sel_hand = possible_hands.hands[1]
-    select_hand(merge(sel_hand, take(possible_hands.wild_cards, 5 - #sel_hand)))
-    return
-  else
-    if #highlighted_wildlesses == 0 then
-      -- every card in hand is wild
-      local sel_hand = possible_hands.hands[1]
-      select_hand(merge(sel_hand, take(possible_hands.wild_cards, 5 - #sel_hand)))
-      return
-    end
-    local non_wild_suit = get_visible_suit(first(highlighted_wildlesses))
-    local remaining_suits = filter(highlighted_wildlesses,
-      function(s) return get_visible_suit(s) ~= non_wild_suit end)
-    if next(remaining_suits) then
-      -- 2 different suits picked, just pick the usual
-      local sel_hand = possible_hands.hands[1]
-      select_hand(merge(sel_hand, take(possible_hands.wild_cards, 5 - #sel_hand)))
-      return
-    end
-    local curr_ind = indexOf(possible_hands.hands,
-      function(k) return get_visible_suit(k[1]) == non_wild_suit end)
-    print(non_wild_suit)
-    if #highlighted_wildlesses == #possible_hands.hands[curr_ind] then
-      if curr_ind == #possible_hands.hands then
-        local sel_hand = possible_hands.hands[1]
-        select_hand(merge(sel_hand, take(possible_hands.wild_cards, 5 - #sel_hand)))
-        return
-      else
-        local sel_hand = possible_hands.hands[curr_ind + 1]
-        select_hand(merge(sel_hand, take(possible_hands.wild_cards, 5 - #sel_hand)))
-        return
-      end
-    else
-      print("wadafak ???")
-      local sel_hand = possible_hands.hands[1]
-      select_hand(merge(sel_hand, take(possible_hands.wild_cards, 5 - #sel_hand)))
-      return
-    end
-  end
 end
 
 local function bind_new_key(key, button)
@@ -567,14 +637,10 @@ local function handle_hotkeys(key, handle_ref)
   end
   if G.STATE == G.STATES.SELECTING_HAND then
     local keycomp = function(x) return x == key end
-    if not (indexOf(config.flush_keys, keycomp) == -1) then
-      select_flush()
-    elseif not (indexOf(config.oak_keys, keycomp) == -1) then
-      local best_hands = best_ofakinds(G.hand.cards)
-      select_hand(next_best_oak(best_hands, G.hand.highlighted))
-    elseif not (indexOf(config.str_keys, keycomp) == -1) then
-      local best_hands = possible_straights(G.hand.cards)
-      select_hand(next_best_oak(best_hands, G.hand.highlighted))
+    if key == config.best_hand_keys.key1 then
+      select_best_hand(G.hand.cards, config.best_hand_keys.key1conf)
+    elseif key == config.best_hand_keys.key2 then
+      select_best_hand(G.hand.cards, config.best_hand_keys.key2conf)
     elseif not (indexOf(config.invert_keys, keycomp) == -1) then
       invert_selection()
     elseif not (indexOf(config.play_hand_keys, keycomp) == -1) then
@@ -603,6 +669,7 @@ function G.FUNCS.fhotkey_key_change(button)
   button.config.colour = G.C.MONEY
   is_catching_key = button
 end
+
 
 local wheelmovedref = love.wheelmoved or function() end
 function love.wheelmoved(x, y)
